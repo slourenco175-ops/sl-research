@@ -1,0 +1,66 @@
+name: Build & Deploy Commodities Dashboard
+
+# Daily at 23:00 UTC (~7pm New York). Also rebuilds on every push to main
+# that touches commodities/ code, and can be triggered manually.
+on:
+  schedule:
+    - cron: "0 23 * * *"
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths:
+      - "commodities/**"
+      - "requirements.txt"
+      - ".github/workflows/dashboard.yml"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build dashboard
+        env:
+          NO_OPEN: "1"
+        run: python -m commodities.run_cmdty
+
+      - name: Stage Pages site
+        run: |
+          mkdir -p _site
+          # latest v2 dashboard becomes the homepage
+          cp $(ls -t commodities/runs/dashboard_v2_*.html | head -1) _site/index.html
+          # ship the CSV too, for anyone who wants to download the signals
+          cp $(ls -t commodities/runs/signals_*.csv | head -1) _site/latest_signals.csv
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
