@@ -26,8 +26,15 @@ table{border-collapse:collapse;font-size:11px;width:100%;margin-bottom:16px}
 th{background:#1a1a1d;padding:8px 6px;text-align:left;border-bottom:2px solid #d4af37;font-size:10px;letter-spacing:1px;cursor:pointer;user-select:none}
 th:hover{color:#d4af37}
 td{padding:6px;border-bottom:1px solid #2a2a2d}
-tr:hover{background:#1a1a1d}
-.card{background:#15151a;border-left:3px solid #444;padding:18px;margin-bottom:18px}
+tbody tr.summary-row{cursor:pointer}
+tbody tr.summary-row:hover{background:#1a1a1d}
+tbody tr.summary-row.open{background:#1a1a1d}
+tbody tr.summary-row .chev{display:inline-block;width:10px;color:#d4af37;transition:transform .15s}
+tbody tr.summary-row.open .chev{transform:rotate(90deg)}
+tr.detail-row{display:none}
+tr.detail-row.open{display:table-row}
+tr.detail-row > td{padding:0;background:#0e0e10;border-bottom:1px solid #2a2a2d}
+.card{background:#15151a;border-left:3px solid #444;padding:18px;margin:0}
 .card-head{display:flex;align-items:baseline;gap:14px;border-bottom:1px solid #333;padding-bottom:10px;margin-bottom:14px;flex-wrap:wrap}
 .sym{font-size:24px;font-weight:bold;letter-spacing:2px}
 .name{font-size:16px;color:#aaa}
@@ -105,8 +112,8 @@ def _summary_row(r: pd.Series, score: float, verdict: str) -> str:
     )
 
     return f"""
-    <tr data-score="{score}">
-      <td><b>{html.escape(sym_short)}</b></td>
+    <tr class="summary-row" data-score="{score}">
+      <td><span class="chev">▶</span> <b>{html.escape(sym_short)}</b></td>
       <td>{html.escape(r["name"])}</td>
       <td>{html.escape(r["sector"].title())}</td>
       <td>{_fmt(r["price"], 2)}</td>
@@ -232,13 +239,16 @@ def render_v2(
     df = df.copy().reset_index(drop=True)
 
     summary_rows = []
-    detail_cards = []
+    n_cols = 19  # number of <th> in summary header
     for _, row in df.iterrows():
         score = float(row["_score"])
         verdict = row["_verdict"]
         reasons = row.get("_reasons", []) if "_reasons" in df.columns else []
         summary_rows.append(_summary_row(row, score, verdict))
-        detail_cards.append(_detail_card(row, score, reasons, verdict))
+        detail_html = _detail_card(row, score, reasons, verdict)
+        summary_rows.append(
+            f'<tr class="detail-row"><td colspan="{n_cols}">{detail_html}</td></tr>'
+        )
 
     spread_rows = "".join(_spread_row(r) for _, r in spreads_df.iterrows()) if not spreads_df.empty else ""
 
@@ -270,24 +280,38 @@ def render_v2(
   <th>Spread</th><th>Last</th><th>Z(3y)</th><th>%ile 3y</th><th>1M%</th><th>Signal</th>
 </tr></thead><tbody>{spread_rows}</tbody></table>
 
-<h2>DETAIL CARDS</h2>
-{''.join(detail_cards)}
-
 <script>
+// Click-to-expand detail rows
+document.querySelectorAll('#summary tr.summary-row').forEach(row => {{
+  row.addEventListener('click', () => {{
+    const detail = row.nextElementSibling;
+    if (!detail || !detail.classList.contains('detail-row')) return;
+    row.classList.toggle('open');
+    detail.classList.toggle('open');
+  }});
+}});
+
+// Column sorting (keeps summary+detail rows paired)
 document.querySelectorAll('#summary th').forEach((th, i) => {{
   let asc = false;
   th.addEventListener('click', () => {{
     const tbody = th.closest('table').querySelector('tbody');
-    const rows = Array.from(tbody.querySelectorAll('tr'));
-    rows.sort((a, b) => {{
-      const ax = a.children[i].dataset.sort ?? a.children[i].innerText;
-      const bx = b.children[i].dataset.sort ?? b.children[i].innerText;
+    const allRows = Array.from(tbody.querySelectorAll('tr'));
+    const pairs = [];
+    for (let k = 0; k < allRows.length; k++) {{
+      if (allRows[k].classList.contains('summary-row')) {{
+        pairs.push([allRows[k], allRows[k + 1]]);
+      }}
+    }}
+    pairs.sort((a, b) => {{
+      const ax = a[0].children[i].dataset.sort ?? a[0].children[i].innerText;
+      const bx = b[0].children[i].dataset.sort ?? b[0].children[i].innerText;
       const an = parseFloat(ax), bn = parseFloat(bx);
       if (!isNaN(an) && !isNaN(bn)) return asc ? an - bn : bn - an;
       return asc ? ax.localeCompare(bx) : bx.localeCompare(ax);
     }});
     asc = !asc;
-    rows.forEach(r => tbody.appendChild(r));
+    pairs.forEach(p => {{ tbody.appendChild(p[0]); if (p[1]) tbody.appendChild(p[1]); }});
   }});
 }});
 </script>
