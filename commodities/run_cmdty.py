@@ -102,7 +102,7 @@ def main() -> None:
 
     # The v2 renderer expects df to already be sorted, with _score/_verdict/_reasons attached
     scored = list(zip(df["_score"], df["_reasons"], df["_verdict"]))
-    render_v2(df, spreads_df, macro, scored, v2_path)
+    render_v2(df, spreads_df, macro, scored, v2_path, ohlc=ohlc)
     render_v1(df, v1_path)
 
     df.drop(columns=["spark", "_reasons"], errors="ignore").to_csv(csv_path, index=False)

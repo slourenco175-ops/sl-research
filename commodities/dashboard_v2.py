@@ -50,6 +50,11 @@ tr.detail-row > td{padding:0;background:#0e0e10;border-bottom:1px solid #2a2a2d}
 .up{color:#5cb85c}
 .down{color:#d9534f}
 .flat{color:#888}
+.spark-wrap{margin-bottom:14px;background:#0e0e10;border:1px solid #2a2a2d;padding:10px 12px}
+.spark-wrap h4{margin-bottom:6px}
+.spark-wrap svg{display:block;width:100%;height:90px}
+.spark-meta{font-size:11px;color:#999;margin-top:4px;display:flex;gap:14px;flex-wrap:wrap}
+.spark-meta b{color:#d4af37}
 """
 
 
@@ -75,6 +80,77 @@ def _fmt(x, digits=2):
 
 def _trend_chips(st: str, mt: str, lt: str) -> str:
     return f"{st[0]}/{mt[0]}/{lt[0]}"
+
+
+def _sparkline_svg(closes: pd.Series, width: int = 600, height: int = 90) -> str:
+    """Inline SVG line chart of the last ~22 trading days of close prices."""
+    s = closes.dropna().tail(22)
+    if len(s) < 2:
+        return '<div class="note">no price history</div>'
+
+    vals = s.values.astype(float)
+    lo, hi = float(vals.min()), float(vals.max())
+    rng = (hi - lo) or 1.0
+    pad_x, pad_y = 4, 6
+    n = len(vals)
+    inner_w = width - 2 * pad_x
+    inner_h = height - 2 * pad_y
+
+    pts = []
+    for i, v in enumerate(vals):
+        x = pad_x + (i / (n - 1)) * inner_w
+        y = pad_y + inner_h - ((v - lo) / rng) * inner_h
+        pts.append(f"{x:.1f},{y:.1f}")
+    poly = " ".join(pts)
+
+    first, last = vals[0], vals[-1]
+    color = "#5cb85c" if last >= first else "#d9534f"
+    fill = "rgba(92,184,92,0.10)" if last >= first else "rgba(217,83,79,0.10)"
+
+    # area fill polygon (line + drop to baseline)
+    area_pts = poly + f" {pad_x + inner_w:.1f},{pad_y + inner_h:.1f} {pad_x:.1f},{pad_y + inner_h:.1f}"
+
+    last_x = pad_x + inner_w
+    last_y = pad_y + inner_h - ((last - lo) / rng) * inner_h
+
+    return (
+        f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none">'
+        f'<polygon points="{area_pts}" fill="{fill}" stroke="none"/>'
+        f'<polyline points="{poly}" fill="none" stroke="{color}" stroke-width="1.5"/>'
+        f'<circle cx="{last_x:.1f}" cy="{last_y:.1f}" r="2.5" fill="{color}"/>'
+        f'</svg>'
+    )
+
+
+def _spark_block(symbol: str, ohlc: dict[str, pd.DataFrame] | None) -> str:
+    if not ohlc or symbol not in ohlc:
+        return ""
+    df = ohlc[symbol]
+    if df is None or df.empty or "Close" not in df.columns:
+        return ""
+    closes = df["Close"].dropna().tail(22)
+    if len(closes) < 2:
+        return ""
+    first, last = float(closes.iloc[0]), float(closes.iloc[-1])
+    chg_pct = (last / first - 1.0) * 100.0
+    lo, hi = float(closes.min()), float(closes.max())
+    start_dt = closes.index[0].strftime("%Y-%m-%d")
+    end_dt = closes.index[-1].strftime("%Y-%m-%d")
+    chg_color = "#5cb85c" if chg_pct >= 0 else "#d9534f"
+    svg = _sparkline_svg(closes)
+    return f"""
+      <div class="spark-wrap">
+        <h4>1-MONTH PRICE ({start_dt} → {end_dt})</h4>
+        {svg}
+        <div class="spark-meta">
+          <span>Last: <b>{last:,.2f}</b></span>
+          <span>1M chg: <b style="color:{chg_color}">{chg_pct:+.2f}%</b></span>
+          <span>1M low: <b>{lo:,.2f}</b></span>
+          <span>1M high: <b>{hi:,.2f}</b></span>
+          <span>Bars: {len(closes)}</span>
+        </div>
+      </div>
+    """
 
 
 def _macro_block(macro: dict) -> str:
@@ -149,9 +225,11 @@ def _spread_row(r: pd.Series) -> str:
     """
 
 
-def _detail_card(r: pd.Series, score: float, reasons: list[str], verdict: str) -> str:
+def _detail_card(r: pd.Series, score: float, reasons: list[str], verdict: str,
+                 ohlc: dict[str, pd.DataFrame] | None = None) -> str:
     color = VERDICT_COLOR.get(verdict, "#888")
     sym_short = r["yf"].replace("=F", "")
+    spark_html = _spark_block(r["yf"], ohlc)
 
     mm_block = ""
     if pd.notna(r.get("mm_3y_percentile")):
@@ -179,6 +257,7 @@ def _detail_card(r: pd.Series, score: float, reasons: list[str], verdict: str) -
         <span class="last">{_fmt(r["price"], 2)}</span>
         <span class="verdict" style="color:{color}">{verdict} ({score:+.1f})</span>
       </div>
+      {spark_html}
       <div class="card-grid">
         <div><h4>TREND</h4><p>
           ST: <b class="{r['trend_st'].lower()}">{r['trend_st']}</b><br>
@@ -234,6 +313,7 @@ def render_v2(
     macro: dict,
     scored: list[tuple[float, list[str], str]],
     out_path: str,
+    ohlc: dict[str, pd.DataFrame] | None = None,
 ) -> None:
     # Caller passes df pre-sorted by score, with _score/_verdict/_reasons attached.
     df = df.copy().reset_index(drop=True)
@@ -245,7 +325,7 @@ def render_v2(
         verdict = row["_verdict"]
         reasons = row.get("_reasons", []) if "_reasons" in df.columns else []
         summary_rows.append(_summary_row(row, score, verdict))
-        detail_html = _detail_card(row, score, reasons, verdict)
+        detail_html = _detail_card(row, score, reasons, verdict, ohlc)
         summary_rows.append(
             f'<tr class="detail-row"><td colspan="{n_cols}">{detail_html}</td></tr>'
         )
