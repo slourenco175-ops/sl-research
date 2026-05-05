@@ -1,7 +1,11 @@
-name: Build & Deploy Commodities Dashboard
+name: Build & Deploy Dashboards
 
 # Daily at 23:00 UTC (~7pm New York). Also rebuilds on every push to main
-# that touches commodities/ code, and can be triggered manually.
+# that touches commodities/ or forex/ code, and can be triggered manually.
+#
+# Site layout:
+#   /          → commodities dashboard (homepage)
+#   /forex/    → forex monitor
 on:
   schedule:
     - cron: "0 23 * * *"
@@ -10,6 +14,7 @@ on:
     branches: [main]
     paths:
       - "commodities/**"
+      - "forex/**"
       - "requirements.txt"
       - ".github/workflows/dashboard.yml"
 
@@ -38,18 +43,25 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Build dashboard
+      - name: Build commodities dashboard
         env:
           NO_OPEN: "1"
         run: python -m commodities.run_cmdty
 
+      - name: Build forex dashboard
+        env:
+          NO_OPEN: "1"
+        run: python -m forex.run_fx
+
       - name: Stage Pages site
         run: |
-          mkdir -p _site
-          # latest v2 dashboard becomes the homepage
+          mkdir -p _site _site/forex
+          # commodities dashboard becomes the homepage
           cp $(ls -t commodities/runs/dashboard_v2_*.html | head -1) _site/index.html
-          # ship the CSV too, for anyone who wants to download the signals
           cp $(ls -t commodities/runs/signals_*.csv | head -1) _site/latest_signals.csv
+          # forex monitor lives at /forex/
+          cp $(ls -t forex/runs/forex_*.html | head -1) _site/forex/index.html
+          cp $(ls -t forex/runs/forex_*.csv | head -1) _site/forex/latest_signals.csv
 
       - uses: actions/upload-pages-artifact@v3
         with:
