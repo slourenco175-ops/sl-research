@@ -50,6 +50,9 @@ tr.detail-row > td{padding:0;background:#0e0e10;border-bottom:1px solid #2a2a2d}
 .up{color:#5cb85c}
 .down{color:#d9534f}
 .flat{color:#888}
+.chart-row{margin:0 0 16px 0;padding:0 4px}
+.chart-row h4{margin-bottom:6px}
+.chart-legend{font-size:10px;color:#777;margin-top:4px;letter-spacing:0.5px}
 """
 
 
@@ -224,11 +227,16 @@ def _detail_card(r: pd.Series) -> str:
         f'<span class="note">tanh-squashed weighted 3m comm. moves</span>'
     )
 
+    reg_r2 = r.get("regression_r2")
+    reg_slope = r.get("regression_slope_pct_yr")
+    reg_fitted = r.get("regression_fitted")
     val_block = (
         f'<b style="color:{_val_color(val_label)}">{val_label}</b><br>'
-        f'5y z-score: {f2(val_z)}σ<br>'
+        f'Residual z: {f2(val_z)}σ<br>'
+        f'Trend FV: {_fmt(reg_fitted, 4)}<br>'
         f'Spot: {_fmt(r["price"], 4)}<br>'
-        f'<span class="note">distance from 5y mean — crude PPP anchor</span>'
+        f'R²: {f2(reg_r2)} · slope {f2(reg_slope)}%/yr<br>'
+        f'<span class="note">distance from 5y OLS trend</span>'
     )
 
     score_breakdown_block = (
@@ -241,6 +249,21 @@ def _detail_card(r: pd.Series) -> str:
 
     reasons_html = "".join(f"<li>{html.escape(t)}</li>" for t in reasons) or "<li>(no rules fired)</li>"
 
+    chart_svg = r.get("regression_svg", "") or ""
+    chart_block = f"""
+      <div class="chart-row">
+        <h4>5Y LINEAR REGRESSION · price vs trend ±1σ / ±2σ</h4>
+        {chart_svg}
+        <div class="chart-legend">
+          <span style="color:#d4af37">━━ price</span> &nbsp;
+          <span style="color:#aaa">━━ trend (OLS)</span> &nbsp;
+          <span style="color:#aaa">┄┄ ±1σ</span> &nbsp;
+          <span style="color:#d9534f">┄┄ +2σ (rich)</span> &nbsp;
+          <span style="color:#5cb85c">┄┄ −2σ (cheap)</span>
+        </div>
+      </div>
+    """ if chart_svg else ""
+
     return f"""
     <div class="card" style="border-left-color:{color}">
       <div class="card-head">
@@ -250,6 +273,7 @@ def _detail_card(r: pd.Series) -> str:
         <span class="last">{_fmt(r["price"], 4)}</span>
         <span class="verdict" style="color:{color}">{verdict} · FV {fv_score:+.1f}</span>
       </div>
+      {chart_block}
       <div class="card-grid">
         <div><h4>FUNDAMENTALS (FV)</h4><p>{fundamentals_block}</p></div>
         <div><h4>VALUATION (5Y MR)</h4><p>{val_block}</p></div>

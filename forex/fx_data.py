@@ -152,7 +152,7 @@ def latest_lev_money(tff_df: pd.DataFrame, contract_substring: str) -> dict | No
 # -------------------------- FRED --------------------------
 
 @lru_cache(maxsize=512)
-def _fetch_fred_one(series_id: str) -> pd.Series:
+def _fetch_fred_one(series_id: str, quiet: bool = False) -> pd.Series:
     """Fetch a single FRED series via the public CSV endpoint."""
     url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
     try:
@@ -160,7 +160,8 @@ def _fetch_fred_one(series_id: str) -> pd.Series:
         r.raise_for_status()
         df = pd.read_csv(io.StringIO(r.text))
     except Exception as e:
-        print(f"  ! FRED {series_id}: {e}")
+        if not quiet:
+            print(f"  ! FRED {series_id}: {e}")
         return pd.Series(dtype=float)
 
     if df.empty or df.shape[1] < 2:
@@ -175,13 +176,18 @@ def _fetch_fred_one(series_id: str) -> pd.Series:
 def fetch_fred(series: str | list[str]) -> pd.Series:
     """Fetch a FRED series. Accepts either a single ID or a list of fallbacks.
 
-    With a list, returns the first non-empty series. This handles FRED's habit
-    of renaming/retiring OECD-derived IDs without warning.
+    With a list, returns the first non-empty series. Failed candidates are
+    only reported if every fallback fails — single 404s in the middle of a
+    fallback chain are expected (the whole point of the chain).
     """
     if isinstance(series, str):
         return _fetch_fred_one(series)
-    for sid in series:
-        s = _fetch_fred_one(sid)
+    for sid in series[:-1]:
+        s = _fetch_fred_one(sid, quiet=True)
         if not s.empty:
             return s
-    return pd.Series(dtype=float)
+    final = series[-1]
+    s = _fetch_fred_one(final, quiet=True)
+    if s.empty:
+        print(f"  ! FRED all candidates failed: {series}")
+    return s

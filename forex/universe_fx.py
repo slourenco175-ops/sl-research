@@ -29,6 +29,9 @@ UNIVERSE = [
     {"yf": "GBPJPY=X", "base": "GBP", "quote": "JPY", "name": "Pound / Yen",             "group": "cross"},
     {"yf": "AUDJPY=X", "base": "AUD", "quote": "JPY", "name": "Aussie / Yen",            "group": "cross"},
     {"yf": "EURCHF=X", "base": "EUR", "quote": "CHF", "name": "Euro / Swiss Franc",      "group": "cross"},
+
+    # --- emerging markets (1) ---
+    {"yf": "USDBRL=X", "base": "USD", "quote": "BRL", "name": "US Dollar / Brazilian Real", "group": "em"},
 ]
 
 
@@ -145,6 +148,23 @@ CURRENCIES = {
         },
         # No free dairy futures proxy on yfinance — use copper as a risk/AU proxy.
         "commodities": {"HG=F": 0.4},
+    },
+    "BRL": {
+        "name": "Brazilian Real",
+        "country": "Brazil",
+        "cot_name": "BRAZILIAN REAL",
+        "fred": {
+            # Brazil long bond data on FRED is patchy. Selic-style series often
+            # serve as the carry proxy since EM curves are short-fat.
+            "y10":    ["INTGSBBRM193N", "IRLTLT01BRM156N", "INTDSRBRM193N"],
+            "policy": ["INTDSRBRM193N", "IR3TIB01BRM156N"],
+            "unemp":  ["LRHUTTTTBRQ156S", "LRHUTTTTBRM156S"],
+            "cpi":    ["BRACPIALLMINMEI", "BRACPALTT01IXOBM"],
+            "gdp":    ["NAEXKP01BRQ189S", "NGDPRSAXDCBRQ"],
+        },
+        # Brazil = top global exporter of soybeans, coffee, iron ore; major oil exporter.
+        # Using oil + copper (broad cycle) + soybeans (#1 BR export) as proxies.
+        "commodities": {"CL=F": 0.3, "HG=F": 0.3, "ZS=F": 0.4},
     },
 }
 

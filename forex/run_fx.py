@@ -35,7 +35,7 @@ from forex.scoring_fx import score_row
 from forex.universe_fx import CURRENCIES, UNIVERSE
 
 OUTPUT_DIR = "forex/runs"
-COMMODITY_SYMBOLS = ["CL=F", "GC=F", "HG=F"]
+COMMODITY_SYMBOLS = ["CL=F", "GC=F", "HG=F", "ZS=F"]
 
 
 def main() -> None:
@@ -106,7 +106,7 @@ def main() -> None:
     csv_path = os.path.join(OUTPUT_DIR, f"forex_{stamp}.csv")
 
     render(df, health_df, macro, html_path)
-    df.drop(columns=["spark", "_reasons"], errors="ignore").to_csv(csv_path, index=False)
+    df.drop(columns=["spark", "_reasons", "regression_svg"], errors="ignore").to_csv(csv_path, index=False)
 
     print(f"\n  HTML -> {html_path}")
     print(f"  CSV  -> {csv_path}\n")

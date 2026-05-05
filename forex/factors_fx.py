@@ -140,20 +140,139 @@ def _cta_label(score: float) -> str:
     return "FLAT"
 
 
-def _valuation_z(close: pd.Series, lookback: int = 1260) -> float:
-    """Z-score of spot vs the trailing-5y mean (~1260 trading days).
+def _regression_analysis(close: pd.Series, lookback: int = 1260) -> dict:
+    """5y OLS regression of price on time + residual statistics + inline SVG chart.
 
-    A crude PPP-style anchor. Positive = spot is rich vs its multi-year average
-    (base ccy expensive); negative = cheap. Multi-year horizon swallows the
-    shorter cyclical noise that the technicals already capture.
+    A flat-mean valuation anchor is a poor fit when a pair has been trending
+    for years (USDJPY, USDBRL). A linear regression captures the trend, then
+    measures how far spot is from that trend in residual standard deviations.
+
+    Returns:
+      z              : (last_price − fitted_last) / σ_residual; >0 = spot above trend
+      r2             : goodness-of-fit of the trend line
+      slope_pct_yr   : annualized drift implied by the trend (% of mean / yr)
+      sigma_resid    : residual standard deviation (price units)
+      fitted_last    : the model's "fair value" today
+      svg            : embeddable SVG showing price + trend + ±1/±2σ bands
     """
     s = close.dropna().iloc[-lookback:]
     if len(s) < 252:
-        return float("nan")
-    sd = s.std()
-    if sd <= 0:
-        return float("nan")
-    return float((s.iloc[-1] - s.mean()) / sd)
+        return {}
+
+    n = len(s)
+    t = np.arange(n, dtype=float)
+    y = s.values.astype(float)
+
+    t_mean = t.mean()
+    y_mean = y.mean()
+    var_t = ((t - t_mean) ** 2).sum()
+    if var_t <= 0:
+        return {}
+    b = ((t - t_mean) * (y - y_mean)).sum() / var_t
+    a = y_mean - b * t_mean
+    fitted = a + b * t
+    resid = y - fitted
+    sigma = float(resid.std(ddof=0))
+    if sigma <= 0:
+        return {}
+
+    z = float((y[-1] - fitted[-1]) / sigma)
+    ss_res = float((resid ** 2).sum())
+    ss_tot = float(((y - y_mean) ** 2).sum())
+    r2 = float(1 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+    slope_pct_yr = float(b * 252 / fitted.mean() * 100)  # %/yr drift of fair value
+
+    svg = _regression_svg(t, y, fitted, sigma)
+
+    return {
+        "z": round(z, 2),
+        "r2": round(r2, 3),
+        "slope_pct_yr": round(slope_pct_yr, 2),
+        "sigma_resid": sigma,
+        "fitted_last": float(fitted[-1]),
+        "svg": svg,
+    }
+
+
+def _regression_svg(t: np.ndarray, y: np.ndarray, fitted: np.ndarray, sigma: float) -> str:
+    """Inline SVG: price line + regression trend + ±1σ / ±2σ residual bands.
+
+    Self-contained (no external scripts); colors match the dashboard theme.
+    Width 720 × height 220 keeps it readable inside a detail card.
+    """
+    W, H = 720, 220
+    PAD_L, PAD_R, PAD_T, PAD_B = 60, 12, 10, 28
+    plot_w = W - PAD_L - PAD_R
+    plot_h = H - PAD_T - PAD_B
+    n = len(t)
+
+    upper2 = fitted + 2 * sigma
+    upper1 = fitted + sigma
+    lower1 = fitted - sigma
+    lower2 = fitted - 2 * sigma
+
+    y_min = float(min(y.min(), lower2.min()))
+    y_max = float(max(y.max(), upper2.max()))
+    y_pad = (y_max - y_min) * 0.04 if y_max > y_min else 1.0
+    y_min -= y_pad
+    y_max += y_pad
+    y_range = y_max - y_min
+
+    def x_at(i: int) -> float:
+        return PAD_L + (i / (n - 1)) * plot_w
+
+    def y_at(v: float) -> float:
+        return PAD_T + (1 - (v - y_min) / y_range) * plot_h
+
+    def line_path(values: np.ndarray) -> str:
+        return "M " + " L ".join(f"{x_at(i):.1f},{y_at(values[i]):.1f}" for i in range(n))
+
+    def two_point(values: np.ndarray) -> str:
+        return f"M {x_at(0):.1f},{y_at(values[0]):.1f} L {x_at(n - 1):.1f},{y_at(values[n - 1]):.1f}"
+
+    price_d = line_path(y)
+    reg_d = two_point(fitted)
+    p1u = two_point(upper1)
+    p1d = two_point(lower1)
+    p2u = two_point(upper2)
+    p2d = two_point(lower2)
+
+    # y-axis labels at 5 evenly spaced grid lines
+    y_labels = []
+    for k in range(5):
+        v = y_min + (4 - k) / 4 * y_range
+        y_labels.append(
+            f'<text x="{PAD_L - 4:.0f}" y="{y_at(v) + 3:.0f}" '
+            f'fill="#777" font-size="9" font-family="monospace" text-anchor="end">{v:.4f}</text>'
+            f'<line x1="{PAD_L}" y1="{y_at(v):.1f}" x2="{W - PAD_R}" y2="{y_at(v):.1f}" '
+            f'stroke="#1f1f23" stroke-width="0.5"/>'
+        )
+
+    # x-axis: time markers every ~year
+    x_labels = []
+    n_years_approx = max(1, round(n / 252))
+    for k in range(n_years_approx + 1):
+        idx = min(n - 1, int(round(k * n / n_years_approx)))
+        years_ago = (n - 1 - idx) / 252
+        label = "now" if years_ago < 0.1 else f"-{years_ago:.0f}y"
+        x_labels.append(
+            f'<text x="{x_at(idx):.0f}" y="{H - 8:.0f}" fill="#777" font-size="9" '
+            f'font-family="monospace" text-anchor="middle">{label}</text>'
+        )
+
+    return (
+        f'<svg width="100%" viewBox="0 0 {W} {H}" preserveAspectRatio="xMidYMid meet" '
+        f'xmlns="http://www.w3.org/2000/svg" style="display:block;background:#0e0e10;border:1px solid #2a2a2d">'
+        f'{"".join(y_labels)}'
+        f'<path d="{p2u}" fill="none" stroke="#d9534f" stroke-width="0.8" stroke-dasharray="4,3" opacity="0.85"/>'
+        f'<path d="{p1u}" fill="none" stroke="#aaa" stroke-width="0.6" stroke-dasharray="2,3" opacity="0.45"/>'
+        f'<path d="{reg_d}" fill="none" stroke="#aaa" stroke-width="1"/>'
+        f'<path d="{p1d}" fill="none" stroke="#aaa" stroke-width="0.6" stroke-dasharray="2,3" opacity="0.45"/>'
+        f'<path d="{p2d}" fill="none" stroke="#5cb85c" stroke-width="0.8" stroke-dasharray="4,3" opacity="0.85"/>'
+        f'<path d="{price_d}" fill="none" stroke="#d4af37" stroke-width="1.3"/>'
+        f'{"".join(x_labels)}'
+        f'</svg>'
+    )
 
 
 def _seasonality(close: pd.Series, month: int) -> dict:
@@ -234,7 +353,7 @@ def compute_pair_technicals(ohlc: pd.DataFrame) -> dict:
 
     cta = _cta_score(p)
     seas = _seasonality(p, month=datetime.utcnow().month)
-    val_z = _valuation_z(p)
+    reg = _regression_analysis(p)
 
     return {
         "price": round(last, 5),
@@ -261,7 +380,12 @@ def compute_pair_technicals(ohlc: pd.DataFrame) -> dict:
         "seas_avg_pct": round(seas["avg_pct"], 2),
         "seas_hit_rate": seas["hit_rate"],
         "seas_n_years": seas["n_years"],
-        "valuation_z": round(val_z, 2) if pd.notna(val_z) else float("nan"),
+        # 5y OLS regression: residual z-score, R², annualized trend slope, fitted FV, chart SVG
+        "valuation_z":     reg.get("z", float("nan")),
+        "regression_r2":   reg.get("r2", float("nan")),
+        "regression_slope_pct_yr": reg.get("slope_pct_yr", float("nan")),
+        "regression_fitted": reg.get("fitted_last", float("nan")),
+        "regression_svg":  reg.get("svg", ""),
     }
 
 
