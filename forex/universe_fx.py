@@ -69,10 +69,10 @@ CURRENCIES = {
         "cot_name": "BRITISH POUND",
         "fred": {
             "y10":    "IRLTLT01GBM156N",
-            "policy": "IRSTCB01GBM156N",
+            "policy": ["INTDSRGBM193N", "IR3TIB01GBM156N"],
             "unemp":  "LMUNRRTTGBM156S",
             "cpi":    "GBRCPIALLMINMEI",
-            "gdp":    "CLVMNACSCAB1GQUK",
+            "gdp":    ["CLVMNACSCAB1GQUK", "NAEXKP01GBQ189S"],
         },
         "commodities": {},
     },
@@ -82,10 +82,10 @@ CURRENCIES = {
         "cot_name": "JAPANESE YEN",
         "fred": {
             "y10":    "IRLTLT01JPM156N",
-            "policy": "IRSTCB01JPM156N",
+            "policy": ["INTDSRJPM193N", "IRSTCI01JPM156N"],
             "unemp":  "LRUN64TTJPM156S",
             "cpi":    "JPNCPIALLMINMEI",
-            "gdp":    "JPNRGDPEXP",
+            "gdp":    ["JPNRGDPEXP", "NAEXKP01JPQ189S", "CLVMNACSCAB1GQJP"],
         },
         # JPY is a major energy importer; rising oil = JPY headwind.
         "commodities": {"CL=F": -0.5},
@@ -96,10 +96,10 @@ CURRENCIES = {
         "cot_name": "SWISS FRANC",
         "fred": {
             "y10":    "IRLTLT01CHM156N",
-            "policy": "IRSTCB01CHM156N",
+            "policy": ["IR3TIB01CHM156N", "INTDSRCHM193N"],
             "unemp":  "LMUNRRTTCHM156S",
             "cpi":    "CHECPIALLMINMEI",
-            "gdp":    "CLVMNACSCAB1GQCH",
+            "gdp":    ["CLVMNACSCAB1GQCH", "NAEXKP01CHQ189S"],
         },
         # CHF often trades with gold as a safe-haven asset.
         "commodities": {"GC=F": 0.4},
@@ -110,10 +110,10 @@ CURRENCIES = {
         "cot_name": "CANADIAN DOLLAR",
         "fred": {
             "y10":    "IRLTLT01CAM156N",
-            "policy": "IRSTCB01CAM156N",
+            "policy": ["IRSTCB01CAM156N", "INTDSRCAM193N"],
             "unemp":  "LRHUTTTTCAM156S",
             "cpi":    "CANCPIALLMINMEI",
-            "gdp":    "NAEXKP01CAQ652S",
+            "gdp":    ["NGDPRSAXDCCAQ", "NAEXKP01CAQ189S", "CLVMNACSCAB1GQCA"],
         },
         # WTI crude is the dominant CAD commodity link.
         "commodities": {"CL=F": 0.7},
@@ -124,10 +124,10 @@ CURRENCIES = {
         "cot_name": "AUSTRALIAN DOLLAR",
         "fred": {
             "y10":    "IRLTLT01AUM156N",
-            "policy": "IRSTCB01AUM156N",
+            "policy": ["INTDSRAUM193N", "IR3TIB01AUM156N"],
             "unemp":  "LRHUTTTTAUM156S",
             "cpi":    "AUSCPIALLQINMEI",
-            "gdp":    "AUSGDPRQDSMEI",
+            "gdp":    ["NGDPRSAXDCAUQ", "NAEXKP01AUQ189S", "AUSGDPRQDSMEI"],
         },
         # No iron-ore yfinance proxy; copper + gold are reasonable stand-ins.
         "commodities": {"HG=F": 0.5, "GC=F": 0.3},
@@ -138,10 +138,10 @@ CURRENCIES = {
         "cot_name": "NZ DOLLAR",
         "fred": {
             "y10":    "IRLTLT01NZM156N",
-            "policy": "IRSTCB01NZM156N",
+            "policy": ["IR3TIB01NZM156N", "INTDSRNZM193N"],
             "unemp":  "LRHUTTTTNZQ156S",
             "cpi":    "NZLCPIALLQINMEI",
-            "gdp":    "NZLGDPRQDSMEI",
+            "gdp":    ["NAEXKP01NZQ189S", "NGDPRSAXDCNZQ"],
         },
         # No free dairy futures proxy on yfinance — use copper as a risk/AU proxy.
         "commodities": {"HG=F": 0.4},

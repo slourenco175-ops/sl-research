@@ -140,6 +140,22 @@ def _cta_label(score: float) -> str:
     return "FLAT"
 
 
+def _valuation_z(close: pd.Series, lookback: int = 1260) -> float:
+    """Z-score of spot vs the trailing-5y mean (~1260 trading days).
+
+    A crude PPP-style anchor. Positive = spot is rich vs its multi-year average
+    (base ccy expensive); negative = cheap. Multi-year horizon swallows the
+    shorter cyclical noise that the technicals already capture.
+    """
+    s = close.dropna().iloc[-lookback:]
+    if len(s) < 252:
+        return float("nan")
+    sd = s.std()
+    if sd <= 0:
+        return float("nan")
+    return float((s.iloc[-1] - s.mean()) / sd)
+
+
 def _seasonality(close: pd.Series, month: int) -> dict:
     monthly = close.resample("ME").last().pct_change().dropna()
     same_month = monthly[monthly.index.month == month]
@@ -218,6 +234,7 @@ def compute_pair_technicals(ohlc: pd.DataFrame) -> dict:
 
     cta = _cta_score(p)
     seas = _seasonality(p, month=datetime.utcnow().month)
+    val_z = _valuation_z(p)
 
     return {
         "price": round(last, 5),
@@ -244,6 +261,7 @@ def compute_pair_technicals(ohlc: pd.DataFrame) -> dict:
         "seas_avg_pct": round(seas["avg_pct"], 2),
         "seas_hit_rate": seas["hit_rate"],
         "seas_n_years": seas["n_years"],
+        "valuation_z": round(val_z, 2) if pd.notna(val_z) else float("nan"),
     }
 
 
@@ -290,6 +308,11 @@ def build_factor_table(
         unemp_quote = health_get(quote, "unemp")
         unemp_diff = (unemp_base - unemp_quote) if (pd.notna(unemp_base) and pd.notna(unemp_quote)) else float("nan")
 
+        cpi_base = health_get(base, "cpi_yoy")
+        cpi_quote = health_get(quote, "cpi_yoy")
+        # Positive cpi_diff = base ccy has higher inflation (PPP drag on base).
+        cpi_diff = (cpi_base - cpi_quote) if (pd.notna(cpi_base) and pd.notna(cpi_quote)) else float("nan")
+
         health_base = health_get(base, "health_score")
         health_quote = health_get(quote, "health_score")
         health_diff = (health_base - health_quote) if (pd.notna(health_base) and pd.notna(health_quote)) else float("nan")
@@ -305,6 +328,7 @@ def build_factor_table(
             "rr_base": rr_base, "rr_quote": rr_quote, "rr_diff": rr_diff,
             "gdp_base": gdp_base, "gdp_quote": gdp_quote, "gdp_diff": gdp_diff,
             "unemp_base": unemp_base, "unemp_quote": unemp_quote, "unemp_diff": unemp_diff,
+            "cpi_base": cpi_base, "cpi_quote": cpi_quote, "cpi_diff": cpi_diff,
             "health_base": health_base, "health_quote": health_quote, "health_diff": health_diff,
             "comm_base": ccy_tail.get(base, 0.0),
             "comm_quote": ccy_tail.get(quote, 0.0),

@@ -152,12 +152,8 @@ def latest_lev_money(tff_df: pd.DataFrame, contract_substring: str) -> dict | No
 # -------------------------- FRED --------------------------
 
 @lru_cache(maxsize=512)
-def fetch_fred(series_id: str) -> pd.Series:
-    """Fetch a FRED series via the public CSV endpoint (no API key).
-
-    Returns a date-indexed float Series. Missing values ('.') become NaN.
-    Cached so repeated lookups within a run are free.
-    """
+def _fetch_fred_one(series_id: str) -> pd.Series:
+    """Fetch a single FRED series via the public CSV endpoint."""
     url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
     try:
         r = requests.get(url, timeout=30)
@@ -174,3 +170,18 @@ def fetch_fred(series_id: str) -> pd.Series:
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df["value"] = pd.to_numeric(df["value"].replace(".", pd.NA), errors="coerce")
     return df.dropna().set_index("date")["value"].sort_index()
+
+
+def fetch_fred(series: str | list[str]) -> pd.Series:
+    """Fetch a FRED series. Accepts either a single ID or a list of fallbacks.
+
+    With a list, returns the first non-empty series. This handles FRED's habit
+    of renaming/retiring OECD-derived IDs without warning.
+    """
+    if isinstance(series, str):
+        return _fetch_fred_one(series)
+    for sid in series:
+        s = _fetch_fred_one(sid)
+        if not s.empty:
+            return s
+    return pd.Series(dtype=float)

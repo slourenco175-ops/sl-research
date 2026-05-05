@@ -87,14 +87,18 @@ def main() -> None:
                   "comm_3y_percentile", "report_date"]:
             df[c] = pd.NA
 
-    scores, all_reasons, verdicts = [], [], []
-    for _, r in df.iterrows():
-        s, reasons, v = score_row(r.to_dict(), macro)
-        scores.append(s); all_reasons.append(reasons); verdicts.append(v)
-    df["_score"] = scores
-    df["_verdict"] = verdicts
-    df["_reasons"] = all_reasons
-    df = df.sort_values("_score", ascending=False).reset_index(drop=True)
+    scored = [score_row(r.to_dict(), macro) for _, r in df.iterrows()]
+    df["_score"]      = [x["score"]      for x in scored]
+    df["_fv_score"]   = [x["fv_score"]   for x in scored]
+    df["_tech_score"] = [x["tech_score"] for x in scored]
+    df["_val_score"]  = [x["val_score"]  for x in scored]
+    df["_cot_score"]  = [x["cot_score"]  for x in scored]
+    df["_verdict"]    = [x["verdict"]    for x in scored]
+    df["_fv_bias"]    = [x["fv_bias"]    for x in scored]
+    df["_valuation"]  = [x["valuation"]  for x in scored]
+    df["_reasons"]    = [x["reasons"]    for x in scored]
+    # Sort by FV score (the model's "fair value" view), composite as tiebreaker.
+    df = df.sort_values(["_fv_score", "_score"], ascending=False).reset_index(drop=True)
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -107,9 +111,9 @@ def main() -> None:
     print(f"\n  HTML -> {html_path}")
     print(f"  CSV  -> {csv_path}\n")
 
-    print("Top conviction:")
-    cols = ["yf", "name", "_score", "_verdict", "trend_st", "trend_mt", "trend_lt",
-            "macd", "carry_diff", "rr_diff", "health_diff"]
+    print("Top fair-value bias:")
+    cols = ["yf", "name", "_fv_score", "_verdict", "_fv_bias", "_valuation",
+            "_tech_score", "_score", "carry_diff", "rr_diff", "health_diff"]
     print(df[cols].head(8).to_string(index=False))
 
     abs_path = os.path.abspath(html_path)

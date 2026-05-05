@@ -1,151 +1,272 @@
-"""Rules-based conviction scorer for FX pairs.
+"""Fair-value-first conviction scorer for FX pairs.
 
-Blends pair technicals, COT extremes, and base-vs-quote fundamentals deltas
-into a single signed score, then maps to a verdict. Every contributing rule
-is appended to `reasons` so the dashboard can show *why* a pair scores where
-it does — same explicit pattern as `commodities/scoring.py`.
+The model's primary question is: *what does the data say the pair should be
+doing?* Fundamentals (carry, real rates, growth, unemployment, inflation
+differential, country health composite, commodity overlay) drive the FV
+score, which alone determines the verdict. Technicals (trend, MACD, RSI,
+breakout) and 5y valuation distance are tracked separately as a confirmation
+/ timing layer that adjusts the *composite* used for ranking — but never the
+verdict label itself.
+
+This split lets you read the dashboard two ways:
+  1. "Is the model saying this currency is mispriced?" → look at FV bias.
+  2. "Is price action confirming or fighting the model?" → compare tech_score
+     against fv_score, and check the valuation bucket (CHEAP/FAIR/RICH).
+
+Every contributing rule is appended to `reasons` so the dashboard can show
+*why* a pair scores where it does — same explicit pattern as the commodities
+scorer.
 """
 from __future__ import annotations
 
 import pandas as pd
 
 
-def score_row(row: dict, macro: dict) -> tuple[float, list[str], str]:
-    score = 0.0
+def _fv_verdict(fv_score: float) -> str:
+    if fv_score >= 5:
+        return "BULLISH"
+    if fv_score >= 2:
+        return "MILDLY BULLISH"
+    if fv_score <= -5:
+        return "BEARISH"
+    if fv_score <= -2:
+        return "MILDLY BEARISH"
+    return "NEUTRAL"
+
+
+def _fv_bias_label(fv_score: float) -> str:
+    """Short label for the FV column. Says which leg of the pair fundamentals favor."""
+    if fv_score >= 4:
+        return "STRONG BASE"
+    if fv_score >= 1.5:
+        return "MILD BASE"
+    if fv_score <= -4:
+        return "STRONG QUOTE"
+    if fv_score <= -1.5:
+        return "MILD QUOTE"
+    return "BALANCED"
+
+
+def _valuation_label(val_z: float) -> str:
+    if pd.isna(val_z):
+        return "—"
+    if val_z >= 1.5:
+        return "RICH"
+    if val_z >= 0.75:
+        return "MILDLY RICH"
+    if val_z <= -1.5:
+        return "CHEAP"
+    if val_z <= -0.75:
+        return "MILDLY CHEAP"
+    return "FAIR"
+
+
+def score_row(row: dict, macro: dict) -> dict:
+    """Returns: {score, fv_score, tech_score, val_score, cot_score,
+                 verdict, fv_bias, valuation, reasons}."""
+    fv_score = 0.0
+    tech_score = 0.0
+    val_score = 0.0
+    cot_score = 0.0
     reasons: list[str] = []
 
-    # --- pair technical trend (ST/MT/LT) ---
-    for h, key in [("st", "trend_st"), ("mt", "trend_mt"), ("lt", "trend_lt")]:
-        v = row.get(key)
-        if v == "UP":
-            score += 1; reasons.append(f"+1 trend_{h}=UP")
-        elif v == "DOWN":
-            score -= 1; reasons.append(f"-1 trend_{h}=DOWN")
+    # =======================================================================
+    # FUNDAMENTALS — drive the verdict
+    # =======================================================================
 
-    # --- breakout ---
-    bo = row.get("breakout_20d")
-    if bo == "BREAK UP":
-        score += 1; reasons.append("+1 20d breakout up")
-    elif bo == "BREAK DOWN":
-        score -= 1; reasons.append("-1 20d breakdown")
+    # --- carry differential (10y base − 10y quote) — heaviest single driver ---
+    cd = row.get("carry_diff")
+    if pd.notna(cd):
+        if cd >= 3.0:
+            fv_score += 2.5; reasons.append(f"+2.5 FV carry diff {cd:+.2f}% (large base advantage)")
+        elif cd >= 1.5:
+            fv_score += 1.5; reasons.append(f"+1.5 FV carry diff {cd:+.2f}% favors base")
+        elif cd >= 0.5:
+            fv_score += 0.75; reasons.append(f"+0.75 FV carry diff {cd:+.2f}% mild base edge")
+        elif cd <= -3.0:
+            fv_score -= 2.5; reasons.append(f"-2.5 FV carry diff {cd:+.2f}% (large quote advantage)")
+        elif cd <= -1.5:
+            fv_score -= 1.5; reasons.append(f"-1.5 FV carry diff {cd:+.2f}% favors quote")
+        elif cd <= -0.5:
+            fv_score -= 0.75; reasons.append(f"-0.75 FV carry diff {cd:+.2f}% mild quote edge")
 
-    # --- MACD cross (heavier weight than steady-state) ---
-    macd = row.get("macd")
-    if macd == "BULL CROSS":
-        score += 1.5; reasons.append("+1.5 MACD bull cross")
-    elif macd == "BEAR CROSS":
-        score -= 1.5; reasons.append("-1.5 MACD bear cross")
+    # --- real-rate differential ---
+    rr = row.get("rr_diff")
+    if pd.notna(rr):
+        if rr >= 2.0:
+            fv_score += 2.0; reasons.append(f"+2 FV real-rate diff {rr:+.2f}% favors base")
+        elif rr >= 0.5:
+            fv_score += 1.0; reasons.append(f"+1 FV real-rate diff {rr:+.2f}% mild base")
+        elif rr <= -2.0:
+            fv_score -= 2.0; reasons.append(f"-2 FV real-rate diff {rr:+.2f}% favors quote")
+        elif rr <= -0.5:
+            fv_score -= 1.0; reasons.append(f"-1 FV real-rate diff {rr:+.2f}% mild quote")
 
-    # --- CTA / trend follower positioning ---
-    cta = row.get("cta_score", 0)
-    if cta >= 60:
-        score += 1; reasons.append("+1 CTAs heavy long")
-    elif cta <= -60:
-        score -= 1; reasons.append("-1 CTAs heavy short")
+    # --- growth differential (real GDP YoY) ---
+    gd = row.get("gdp_diff")
+    if pd.notna(gd):
+        if gd >= 1.5:
+            fv_score += 1.0; reasons.append(f"+1 FV growth gap {gd:+.2f}pp favors base")
+        elif gd >= 0.5:
+            fv_score += 0.5; reasons.append(f"+0.5 FV growth gap {gd:+.2f}pp")
+        elif gd <= -1.5:
+            fv_score -= 1.0; reasons.append(f"-1 FV growth gap {gd:+.2f}pp favors quote")
+        elif gd <= -0.5:
+            fv_score -= 0.5; reasons.append(f"-0.5 FV growth gap {gd:+.2f}pp")
 
-    # --- COT extremes on BASE ccy futures (contrarian fade) ---
+    # --- unemployment differential (lower base unemp = stronger base) ---
+    ud = row.get("unemp_diff")
+    if pd.notna(ud):
+        if ud <= -2.0:
+            fv_score += 0.75; reasons.append(f"+0.75 FV base unemp {ud:+.2f}pp lower")
+        elif ud <= -0.5:
+            fv_score += 0.5; reasons.append(f"+0.5 FV base unemp {ud:+.2f}pp lower")
+        elif ud >= 2.0:
+            fv_score -= 0.75; reasons.append(f"-0.75 FV base unemp {ud:+.2f}pp higher")
+        elif ud >= 0.5:
+            fv_score -= 0.5; reasons.append(f"-0.5 FV base unemp {ud:+.2f}pp higher")
+
+    # --- inflation differential (PPP drag) ---
+    cpi_d = row.get("cpi_diff")
+    if pd.notna(cpi_d):
+        # Positive cpi_diff means base ccy has higher inflation → erodes purchasing power → bearish base.
+        if cpi_d >= 2.0:
+            fv_score -= 0.75; reasons.append(f"-0.75 FV base inflation {cpi_d:+.2f}pp higher (PPP drag)")
+        elif cpi_d >= 1.0:
+            fv_score -= 0.5; reasons.append(f"-0.5 FV base inflation {cpi_d:+.2f}pp higher")
+        elif cpi_d <= -2.0:
+            fv_score += 0.75; reasons.append(f"+0.75 FV base inflation {cpi_d:+.2f}pp lower (PPP tailwind)")
+        elif cpi_d <= -1.0:
+            fv_score += 0.5; reasons.append(f"+0.5 FV base inflation {cpi_d:+.2f}pp lower")
+
+    # --- country health composite (catches anything the explicit rules miss) ---
+    hd = row.get("health_diff")
+    if pd.notna(hd):
+        if hd >= 30:
+            fv_score += 1.0; reasons.append(f"+1 FV base fundamentals stronger (Δhealth {hd:+.0f})")
+        elif hd >= 15:
+            fv_score += 0.5; reasons.append(f"+0.5 FV base fundamentals mildly stronger (Δhealth {hd:+.0f})")
+        elif hd <= -30:
+            fv_score -= 1.0; reasons.append(f"-1 FV quote fundamentals stronger (Δhealth {hd:+.0f})")
+        elif hd <= -15:
+            fv_score -= 0.5; reasons.append(f"-0.5 FV quote fundamentals mildly stronger (Δhealth {hd:+.0f})")
+
+    # --- commodity overlay (base − quote tailwind) ---
+    cd2 = row.get("comm_diff", 0) or 0
+    if cd2 >= 0.25:
+        fv_score += 1.0; reasons.append(f"+1 FV strong commodity tailwind for base ({cd2:+.2f})")
+    elif cd2 >= 0.10:
+        fv_score += 0.5; reasons.append(f"+0.5 FV commodity tailwind for base ({cd2:+.2f})")
+    elif cd2 <= -0.25:
+        fv_score -= 1.0; reasons.append(f"-1 FV strong commodity tailwind for quote ({cd2:+.2f})")
+    elif cd2 <= -0.10:
+        fv_score -= 0.5; reasons.append(f"-0.5 FV commodity tailwind for quote ({cd2:+.2f})")
+
+    # --- VIX-driven safe-haven kicker (still counts as fundamentals) ---
+    vix = macro.get("VIX", {})
+    if vix and vix.get("pctile_3y", 50) >= 80:
+        base, quote = row.get("base"), row.get("quote")
+        safe_havens = {"USD", "CHF", "JPY"}
+        if base in safe_havens and quote not in safe_havens:
+            fv_score += 0.5; reasons.append(f"+0.5 FV VIX {vix['pctile_3y']:.0f}%ile, base safe-haven")
+        elif quote in safe_havens and base not in safe_havens:
+            fv_score -= 0.5; reasons.append(f"-0.5 FV VIX {vix['pctile_3y']:.0f}%ile, quote safe-haven")
+
+    # =======================================================================
+    # VALUATION (5y mean-reversion anchor) — adjusts composite, not verdict
+    # =======================================================================
+    val_z = row.get("valuation_z")
+    if pd.notna(val_z):
+        if val_z >= 1.5:
+            val_score -= 1.0; reasons.append(f"-1 VAL spot RICH vs 5y mean (z {val_z:+.2f}σ)")
+        elif val_z >= 0.75:
+            val_score -= 0.5; reasons.append(f"-0.5 VAL spot mildly rich (z {val_z:+.2f}σ)")
+        elif val_z <= -1.5:
+            val_score += 1.0; reasons.append(f"+1 VAL spot CHEAP vs 5y mean (z {val_z:+.2f}σ)")
+        elif val_z <= -0.75:
+            val_score += 0.5; reasons.append(f"+0.5 VAL spot mildly cheap (z {val_z:+.2f}σ)")
+
+    # =======================================================================
+    # COT — positioning extremes are a contrarian fade (composite-only)
+    # =======================================================================
     mm_pct = row.get("mm_3y_percentile")
     if pd.notna(mm_pct):
         if mm_pct >= 90:
-            score -= 1; reasons.append(f"-1 LevMoney crowded long base ({mm_pct:.0f}%ile)")
+            cot_score -= 1.0; reasons.append(f"-1 COT LevMoney crowded long base ({mm_pct:.0f}%ile)")
         elif mm_pct <= 10:
-            score += 1; reasons.append(f"+1 LevMoney crowded short base ({mm_pct:.0f}%ile)")
+            cot_score += 1.0; reasons.append(f"+1 COT LevMoney crowded short base ({mm_pct:.0f}%ile)")
 
     traj = row.get("mm_trajectory")
     mm_4w = row.get("mm_4w_change", 0) or 0
     if traj == "REVERSING":
         if mm_4w > 0:
-            score += 0.5; reasons.append("+0.5 LevMoney reversing higher")
+            cot_score += 0.5; reasons.append("+0.5 COT LevMoney reversing higher")
         else:
-            score -= 0.5; reasons.append("-0.5 LevMoney reversing lower")
+            cot_score -= 0.5; reasons.append("-0.5 COT LevMoney reversing lower")
 
-    # --- carry differential (10y base − 10y quote) ---
-    carry_diff = row.get("carry_diff")
-    if pd.notna(carry_diff):
-        if carry_diff >= 2.0:
-            score += 1.5; reasons.append(f"+1.5 carry diff {carry_diff:+.2f}% (base pays)")
-        elif carry_diff >= 0.75:
-            score += 0.75; reasons.append(f"+0.75 carry diff {carry_diff:+.2f}% (mild base advantage)")
-        elif carry_diff <= -2.0:
-            score -= 1.5; reasons.append(f"-1.5 carry diff {carry_diff:+.2f}% (quote pays)")
-        elif carry_diff <= -0.75:
-            score -= 0.75; reasons.append(f"-0.75 carry diff {carry_diff:+.2f}% (mild quote advantage)")
+    # =======================================================================
+    # TECHNICALS — confirmation/timing only (down-weighted in composite)
+    # =======================================================================
+    for h, key in [("st", "trend_st"), ("mt", "trend_mt"), ("lt", "trend_lt")]:
+        v = row.get(key)
+        if v == "UP":
+            tech_score += 1.0; reasons.append(f"+1 TECH trend_{h}=UP")
+        elif v == "DOWN":
+            tech_score -= 1.0; reasons.append(f"-1 TECH trend_{h}=DOWN")
 
-    # --- real-rate differential ---
-    rr_diff = row.get("rr_diff")
-    if pd.notna(rr_diff):
-        if rr_diff >= 1.5:
-            score += 1; reasons.append(f"+1 real-rate diff {rr_diff:+.2f}% favors base")
-        elif rr_diff <= -1.5:
-            score -= 1; reasons.append(f"-1 real-rate diff {rr_diff:+.2f}% favors quote")
+    macd = row.get("macd")
+    if macd == "BULL CROSS":
+        tech_score += 1.5; reasons.append("+1.5 TECH MACD bull cross")
+    elif macd == "BEAR CROSS":
+        tech_score -= 1.5; reasons.append("-1.5 TECH MACD bear cross")
 
-    # --- growth differential (GDP YoY) ---
-    gdp_diff = row.get("gdp_diff")
-    if pd.notna(gdp_diff):
-        if gdp_diff >= 1.0:
-            score += 0.5; reasons.append(f"+0.5 growth gap {gdp_diff:+.2f}pp favors base")
-        elif gdp_diff <= -1.0:
-            score -= 0.5; reasons.append(f"-0.5 growth gap {gdp_diff:+.2f}pp favors quote")
+    bo = row.get("breakout_20d")
+    if bo == "BREAK UP":
+        tech_score += 1.0; reasons.append("+1 TECH 20d breakout up")
+    elif bo == "BREAK DOWN":
+        tech_score -= 1.0; reasons.append("-1 TECH 20d breakdown")
 
-    # --- unemployment differential (lower unemp = stronger; sign flipped) ---
-    unemp_diff = row.get("unemp_diff")
-    if pd.notna(unemp_diff):
-        if unemp_diff <= -1.5:
-            score += 0.5; reasons.append(f"+0.5 base unemp {unemp_diff:+.2f}pp lower")
-        elif unemp_diff >= 1.5:
-            score -= 0.5; reasons.append(f"-0.5 base unemp {unemp_diff:+.2f}pp higher")
+    rsi = row.get("rsi_14", 50) or 50
+    if rsi >= 75:
+        tech_score -= 0.75; reasons.append(f"-0.75 TECH RSI {rsi:.0f} overbought")
+    elif rsi <= 25:
+        tech_score += 0.75; reasons.append(f"+0.75 TECH RSI {rsi:.0f} oversold")
 
-    # --- composite country health delta ---
-    health_diff = row.get("health_diff")
-    if pd.notna(health_diff):
-        if health_diff >= 25:
-            score += 1; reasons.append(f"+1 base fundamentals stronger (Δhealth {health_diff:+.0f})")
-        elif health_diff <= -25:
-            score -= 1; reasons.append(f"-1 quote fundamentals stronger (Δhealth {health_diff:+.0f})")
+    # CTA flags as tech for the composite
+    cta = row.get("cta_score", 0) or 0
+    if cta >= 60:
+        tech_score += 0.5; reasons.append("+0.5 TECH CTAs heavy long")
+    elif cta <= -60:
+        tech_score -= 0.5; reasons.append("-0.5 TECH CTAs heavy short")
 
-    # --- commodity overlay (base − quote tailwind) ---
-    comm_diff = row.get("comm_diff", 0) or 0
-    if comm_diff >= 0.15:
-        score += 0.75; reasons.append(f"+0.75 commodity tailwind for base ({comm_diff:+.2f})")
-    elif comm_diff <= -0.15:
-        score -= 0.75; reasons.append(f"-0.75 commodity tailwind for quote ({comm_diff:+.2f})")
-
-    # --- seasonality ---
+    # Seasonality (very mild)
     s_avg = row.get("seas_avg_pct", 0) or 0
     s_hit = row.get("seas_hit_rate", 0.5) or 0.5
     if s_avg >= 0.5 and s_hit >= 0.6:
-        score += 0.5; reasons.append(f"+0.5 seasonal tailwind (+{s_avg:.1f}%, hit {s_hit*100:.0f}%)")
+        tech_score += 0.25; reasons.append(f"+0.25 TECH seasonal tailwind (+{s_avg:.1f}%, hit {s_hit*100:.0f}%)")
     elif s_avg <= -0.5 and s_hit <= 0.4:
-        score -= 0.5; reasons.append(f"-0.5 seasonal headwind ({s_avg:.1f}%, hit {s_hit*100:.0f}%)")
+        tech_score -= 0.25; reasons.append(f"-0.25 TECH seasonal headwind ({s_avg:.1f}%, hit {s_hit*100:.0f}%)")
 
-    # --- macro overlay: VIX risk-off lifts USD/CHF/JPY ---
-    vix = macro.get("VIX", {})
-    if vix and vix.get("pctile_3y", 50) >= 80:
-        base = row.get("base"); quote = row.get("quote")
-        safe_havens = {"USD", "CHF", "JPY"}
-        if base in safe_havens and quote not in safe_havens:
-            score += 0.5; reasons.append(f"+0.5 VIX {vix['pctile_3y']:.0f}%ile, base is safe-haven")
-        elif quote in safe_havens and base not in safe_havens:
-            score -= 0.5; reasons.append(f"-0.5 VIX {vix['pctile_3y']:.0f}%ile, quote is safe-haven")
+    # =======================================================================
+    # Composite + verdict
+    # =======================================================================
+    composite = fv_score + val_score + cot_score + 0.4 * tech_score
 
-    # --- vol regime damps conviction in extreme vol ---
     if row.get("vol_regime") == "EXTREME":
-        score *= 0.7
-        reasons.append("vol regime EXTREME (conviction reduced 30%)")
+        composite *= 0.7
+        reasons.append("vol regime EXTREME (composite reduced 30%)")
 
-    # --- verdict ---
-    if score >= 5:
-        verdict = "BULLISH"
-    elif score >= 2:
-        verdict = "MILDLY BULLISH"
-    elif score <= -5:
-        verdict = "BEARISH"
-    elif score <= -2:
-        verdict = "MILDLY BEARISH"
-    else:
-        verdict = "NEUTRAL"
-
-    return round(score, 1), reasons, verdict
+    return {
+        "score": round(composite, 1),
+        "fv_score": round(fv_score, 1),
+        "tech_score": round(tech_score, 1),
+        "val_score": round(val_score, 1),
+        "cot_score": round(cot_score, 1),
+        "verdict": _fv_verdict(fv_score),       # FV drives the label
+        "fv_bias": _fv_bias_label(fv_score),
+        "valuation": _valuation_label(row.get("valuation_z", float("nan"))),
+        "reasons": reasons,
+    }
 
 
 VERDICT_COLOR = {

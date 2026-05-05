@@ -25,22 +25,43 @@ from forex.fx_data import fetch_fred
 from forex.universe_fx import CURRENCIES
 
 
+def _periods_per_year(series: pd.Series) -> int:
+    """Detect cadence (4 = quarterly, 12 = monthly, 252 = daily) from index spacing.
+
+    FX fundamentals data on FRED comes in three flavors and the OECD-derived
+    series for AU/NZ/CH switch between monthly and quarterly across categories.
+    Hard-coding 12 (the original implementation) silently produced 3-year YoY
+    on quarterly series.
+    """
+    if len(series) < 6:
+        return 12
+    median_days = float(series.index.to_series().diff().dropna().dt.days.median())
+    if median_days < 10:
+        return 252  # daily (business)
+    if median_days < 45:
+        return 12   # monthly (~30)
+    if median_days < 120:
+        return 4    # quarterly (~91)
+    return 1        # annual
+
+
 def _yoy(series: pd.Series) -> float:
-    """Year-over-year % change of the latest observation, given a level series."""
-    if len(series) < 13:
+    """Year-over-year % change of the latest observation, cadence-aware."""
+    n = _periods_per_year(series)
+    if len(series) <= n:
         return float("nan")
     last = series.iloc[-1]
-    yr_ago = series.iloc[-13]
+    yr_ago = series.iloc[-1 - n]
     if yr_ago == 0 or pd.isna(yr_ago):
         return float("nan")
     return float(last / yr_ago - 1) * 100
 
 
-def _months_back(series: pd.Series, months: int) -> float | None:
-    """Value `months` observations ago (assumes monthly cadence)."""
-    if len(series) <= months:
+def _periods_back(series: pd.Series, periods: int) -> float | None:
+    """Value `periods` observations ago. Caller is responsible for cadence."""
+    if len(series) <= periods:
         return None
-    return float(series.iloc[-1 - months])
+    return float(series.iloc[-1 - periods])
 
 
 def _compute_one(ccy: str, meta: dict) -> dict:
@@ -61,14 +82,20 @@ def _compute_one(ccy: str, meta: dict) -> dict:
 
     real_rate = y10 - cpi_yoy if pd.notna(y10) and pd.notna(cpi_yoy) else float("nan")
 
-    unemp_6m_prev = _months_back(unemp_s, 6)
-    unemp_6m_chg = (unemp - unemp_6m_prev) if (unemp_6m_prev is not None and pd.notna(unemp)) else float("nan")
+    # 6m windows scaled to the series cadence (monthly→6, quarterly→2).
+    unemp_step = max(1, _periods_per_year(unemp_s) // 2)
+    unemp_prev = _periods_back(unemp_s, unemp_step)
+    unemp_6m_chg = (unemp - unemp_prev) if (unemp_prev is not None and pd.notna(unemp)) else float("nan")
 
     cpi_6m_chg = float("nan")
-    if len(cpi_s) >= 13 + 6:
-        cpi_yoy_6m_ago = float(cpi_s.iloc[-7] / cpi_s.iloc[-19] - 1) * 100 if cpi_s.iloc[-19] else float("nan")
-        if pd.notna(cpi_yoy_6m_ago):
-            cpi_6m_chg = cpi_yoy - cpi_yoy_6m_ago
+    if not cpi_s.empty:
+        n = _periods_per_year(cpi_s)
+        step = max(1, n // 2)
+        if len(cpi_s) > n + step:
+            cpi_yoy_prev = float(cpi_s.iloc[-1 - step] / cpi_s.iloc[-1 - step - n] - 1) * 100 \
+                if cpi_s.iloc[-1 - step - n] else float("nan")
+            if pd.notna(cpi_yoy_prev):
+                cpi_6m_chg = cpi_yoy - cpi_yoy_prev
 
     return {
         "ccy": ccy,
