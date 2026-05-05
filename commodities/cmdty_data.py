@@ -27,11 +27,13 @@ def get_ohlc(symbols: list[str], lookback_days: int = 1800) -> dict[str, pd.Data
     """
     end = datetime.utcnow()
     start = end - pd.Timedelta(days=int(lookback_days * 1.6))
+    # yfinance treats `end` as exclusive — bump by 1 day so today's bar is included
+    end_inclusive = end + pd.Timedelta(days=1)
 
     raw = yf.download(
         tickers=symbols,
         start=start.strftime("%Y-%m-%d"),
-        end=end.strftime("%Y-%m-%d"),
+        end=end_inclusive.strftime("%Y-%m-%d"),
         progress=False,
         auto_adjust=True,
         group_by="ticker",
