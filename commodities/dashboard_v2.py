@@ -78,6 +78,57 @@ def _fmt(x, digits=2):
     return f"{x:,.{digits}f}"
 
 
+def _curve_block(r: dict) -> str:
+    """Renders the CURVE panel — real curve when available, else proxy fallback."""
+    n = r.get("curve_n_months")
+    slope = r.get("curve_slope_pct_yr")
+    if n and pd.notna(slope):
+        m12 = r.get("curve_spread_m1_m2_pct")
+        m16 = r.get("curve_spread_m1_m6_pct")
+        ahead = r.get("curve_deferred_months_ahead") or 0
+        state = r.get("curve_state") or "—"
+        m12_s = f"{m12:+.2f}%" if m12 is not None else "—"
+        m16_s = f"{m16:+.2f}%" if m16 is not None else "—"
+        return (
+            f"State: {state}<br>"
+            f"Slope: {slope:+.2f}%/yr<br>"
+            f"M1→M2: {m12_s}<br>"
+            f"M1→M6: {m16_s}<br>"
+            f"<span class='note'>{n} contracts, out {ahead:.0f}m</span>"
+        )
+    # fall back to v1 proxy
+    cstate = r.get("carry_state", "—")
+    cprox = r.get("carry_proxy_pct", 0) or 0
+    return (
+        f"State: {cstate}<br>"
+        f"Proxy: {cprox:+.1f}%<br><br>"
+        f"<span class='note'>v1 proxy — deferred-month fetch unavailable</span>"
+    )
+
+
+def _inventory_block(r: dict) -> str:
+    label = r.get("inv_label")
+    if not label:
+        return "<span class='note'>no inventory feed for this contract</span>"
+    z = r.get("inv_seasonal_z")
+    b4 = r.get("inv_build_4w")
+    b4n = r.get("inv_build_4w_norm")
+    lvl = r.get("inv_level")
+    when = r.get("inv_level_date") or "—"
+    weeks_ago = r.get("inv_weeks_ago")
+    z_s = f"{z:+.2f}σ" if z is not None and pd.notna(z) else "—"
+    b4_s = f"{b4:+,.0f}" if b4 is not None and pd.notna(b4) else "—"
+    b4n_s = f"{b4n:+,.0f}" if b4n is not None and pd.notna(b4n) else "—"
+    lvl_s = f"{lvl:,.0f}" if lvl is not None and pd.notna(lvl) else "—"
+    return (
+        f"<span class='note'>{label}</span><br>"
+        f"Level: {lvl_s}<br>"
+        f"Seasonal z: {z_s}<br>"
+        f"4w Δ: {b4_s} ({b4n_s} vs norm)<br>"
+        f"As of: {when} ({weeks_ago}w ago)"
+    )
+
+
 def _trend_chips(st: str, mt: str, lt: str) -> str:
     return f"{st[0]}/{mt[0]}/{lt[0]}"
 
@@ -270,19 +321,21 @@ def _detail_card(r: pd.Series, score: float, reasons: list[str], verdict: str,
           RSI: {r['rsi_14']:.1f}<br>
           MACD: {r['macd']}<br>
           Breakout: {r['breakout_20d']}<br>
-          1m: {_fmt_pct_ratio(r['mom_1m'])}<br>
-          3m: {_fmt_pct_ratio(r['mom_3m'])}
+          1m: {_fmt_pct_ratio(r['mom_1m'])} ({(r.get('mom_1m_z') or 0):+.2f}σ)<br>
+          3m: {_fmt_pct_ratio(r['mom_3m'])} ({(r.get('mom_3m_z') or 0):+.2f}σ)
         </p></div>
-        <div><h4>CARRY</h4><p>
-          State: {r['carry_state']}<br>
-          Proxy: {r.get('carry_proxy_pct', 0):+.1f}%<br><br>
-          {carry_note}
+        <div><h4>CURVE</h4><p>
+          {_curve_block(r)}
+        </p></div>
+        <div><h4>INVENTORIES</h4><p>
+          {_inventory_block(r)}
         </p></div>
         <div><h4>VOL REGIME</h4><p>
           RV 20d: {r.get('vol_20d_ann_pct', 0):.1f}%<br>
           RV 60d: {r.get('vol_60d_ann_pct', 0):.1f}%<br>
           %ile (3y): {r.get('vol_pctile_3y', 0):.0f}<br>
-          Regime: {r['vol_regime']}
+          Regime: {r['vol_regime']}<br>
+          Vol vs 5y med: {(r.get('vol_ratio_5y') or 1.0):.2f}×
         </p></div>
         <div><h4>CTA POSITIONING</h4><p>
           {r['cta_label']} ({r['cta_score']:+d})<br>

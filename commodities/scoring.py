@@ -25,6 +25,17 @@ def score_row(row: dict, macro: dict) -> tuple[float, list[str], str]:
         elif v == "DOWN":
             score -= 1; reasons.append(f"-1 trend_{h}=DOWN")
 
+    # --- vol-scaled trend strength: continuous magnitude on top of buckets ---
+    # Each z-score is in [-3, +3]; weight roughly matches the bucket weights.
+    z3 = row.get("mom_3m_z", 0) or 0
+    z12 = row.get("mom_12m_z", 0) or 0
+    if abs(z3) >= 0.5:
+        contrib = round(0.5 * z3, 2)
+        score += contrib; reasons.append(f"{contrib:+.2f} 3m vol-scaled trend ({z3:+.2f}σ)")
+    if abs(z12) >= 0.5:
+        contrib = round(0.5 * z12, 2)
+        score += contrib; reasons.append(f"{contrib:+.2f} 12m vol-scaled trend ({z12:+.2f}σ)")
+
     # --- breakout
     bo = row.get("breakout_20d")
     if bo == "BREAK UP":
@@ -71,12 +82,51 @@ def score_row(row: dict, macro: dict) -> tuple[float, list[str], str]:
         elif comm_pct <= 20:
             score -= 1; reasons.append(f"-1 Commercials hedging ({comm_pct:.0f}%ile)")
 
-    # --- carry (proxy)
-    cstate = row.get("carry_state")
-    if cstate == "BACKWARDATION":
-        score += 1; reasons.append("+1 Backwardated curve")
-    elif cstate == "CONTANGO":
-        score -= 0.5; reasons.append("-0.5 Contango drag")
+    # --- real curve slope (preferred when available) ---
+    # When the deferred-month curve fetch succeeded we score the real annualized
+    # roll yield; otherwise fall back to the spot-vs-252d carry proxy below.
+    curve_slope = row.get("curve_slope_pct_yr")
+    if pd.notna(curve_slope):
+        if curve_slope <= -8:
+            score += 1.5; reasons.append(f"+1.5 curve steeply backwardated ({curve_slope:+.1f}%/yr)")
+        elif curve_slope <= -3:
+            score += 1.0; reasons.append(f"+1 curve backwardated ({curve_slope:+.1f}%/yr)")
+        elif curve_slope >= 8:
+            score -= 1.0; reasons.append(f"-1 curve steeply contangoed ({curve_slope:+.1f}%/yr)")
+        elif curve_slope >= 3:
+            score -= 0.5; reasons.append(f"-0.5 curve contangoed ({curve_slope:+.1f}%/yr)")
+    else:
+        # --- carry (proxy) — used only if real curve unavailable
+        cstate = row.get("carry_state")
+        if cstate == "BACKWARDATION":
+            score += 1; reasons.append("+1 Backwardated curve (proxy)")
+        elif cstate == "CONTANGO":
+            score -= 0.5; reasons.append("-0.5 Contango drag (proxy)")
+
+    # --- inventory seasonal-z (only set for energy contracts with EIA data) ---
+    inv_z = row.get("inv_seasonal_z")
+    if pd.notna(inv_z):
+        if inv_z <= -1.5:
+            score += 1.5; reasons.append(f"+1.5 inventories deep below seasonal norm (z {inv_z:+.2f})")
+        elif inv_z <= -0.75:
+            score += 1.0; reasons.append(f"+1 inventories below seasonal norm (z {inv_z:+.2f})")
+        elif inv_z >= 1.5:
+            score -= 1.5; reasons.append(f"-1.5 inventories deep above seasonal norm (z {inv_z:+.2f})")
+        elif inv_z >= 0.75:
+            score -= 1.0; reasons.append(f"-1 inventories above seasonal norm (z {inv_z:+.2f})")
+
+    # --- inventory build vs typical: "is this week's draw bigger/smaller than usual?"
+    inv_b4n = row.get("inv_build_4w_norm")
+    if pd.notna(inv_b4n):
+        # We don't have a universal threshold per commodity — use level-relative scaling.
+        # Convert the build-vs-norm into a fraction of the latest level.
+        inv_lvl = row.get("inv_level") or 0
+        if inv_lvl > 0:
+            frac = inv_b4n / inv_lvl  # e.g. 0.04 = 4% of stockpile bigger build than typical
+            if frac <= -0.04:
+                score += 0.5; reasons.append(f"+0.5 4w draw bigger than seasonal norm ({frac*100:+.1f}%)")
+            elif frac >= 0.04:
+                score -= 0.5; reasons.append(f"-0.5 4w build bigger than seasonal norm ({frac*100:+.1f}%)")
 
     # --- seasonality
     s_avg = row.get("seas_avg_pct", 0) or 0
@@ -98,6 +148,14 @@ def score_row(row: dict, macro: dict) -> tuple[float, list[str], str]:
     if row.get("vol_regime") == "EXTREME":
         score *= 0.7
         reasons.append("vol regime EXTREME (conviction reduced 30%)")
+
+    # --- vol-ratio damp: if today's vol is N× the 5y median, shrink the score by 1/N.
+    # CTA recipe — equates conviction across assets at different vol regimes.
+    vr = row.get("vol_ratio_5y", 1.0) or 1.0
+    if vr > 1.2:
+        damp = 1.0 / min(vr, 3.0)
+        score *= damp
+        reasons.append(f"vol {vr:.2f}× 5y norm → conviction × {damp:.2f}")
 
     # --- verdict
     if score >= 5:

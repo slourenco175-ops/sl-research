@@ -214,6 +214,16 @@ def score_row(row: dict, macro: dict) -> dict:
         elif v == "DOWN":
             tech_score -= 1.0; reasons.append(f"-1 TECH trend_{h}=DOWN")
 
+    # vol-scaled trend strength on the pair itself (clipped ±3σ)
+    z3 = row.get("mom_3m_z", 0) or 0
+    z12 = row.get("mom_12m_z", 0) or 0
+    if abs(z3) >= 0.5:
+        contrib = round(0.5 * z3, 2)
+        tech_score += contrib; reasons.append(f"{contrib:+.2f} TECH 3m vol-scaled trend ({z3:+.2f}σ)")
+    if abs(z12) >= 0.5:
+        contrib = round(0.5 * z12, 2)
+        tech_score += contrib; reasons.append(f"{contrib:+.2f} TECH 12m vol-scaled trend ({z12:+.2f}σ)")
+
     macd = row.get("macd")
     if macd == "BULL CROSS":
         tech_score += 1.5; reasons.append("+1.5 TECH MACD bull cross")
@@ -255,6 +265,13 @@ def score_row(row: dict, macro: dict) -> dict:
     if row.get("vol_regime") == "EXTREME":
         composite *= 0.7
         reasons.append("vol regime EXTREME (composite reduced 30%)")
+
+    # vol-ratio damp: if 60d vol is N× the 5y median, shrink the composite by 1/N
+    vr = row.get("vol_ratio_5y", 1.0) or 1.0
+    if vr > 1.2:
+        damp = 1.0 / min(vr, 3.0)
+        composite *= damp
+        reasons.append(f"vol {vr:.2f}× 5y norm → composite × {damp:.2f}")
 
     return {
         "score": round(composite, 1),

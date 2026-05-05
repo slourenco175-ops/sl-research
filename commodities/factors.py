@@ -122,6 +122,43 @@ def _vol_pctile(close: pd.Series, window: int = 20, lookback: int = 756) -> tupl
     return vol_20, vol_60, pct
 
 
+def _vol_ratio_5y(close: pd.Series, window: int = 60, lookback: int = 1260) -> float:
+    """Current 60d ann vol / 5y median 60d ann vol.
+
+    Used to damp aggregate scores: a +5 score in a 2× vol burst is far less
+    informative than the same +5 in a calm regime. A ratio of 2.0 means
+    "volatility is double the long-run norm — shrink conviction by half."
+    """
+    rets = close.pct_change().dropna()
+    if len(rets) < window:
+        return 1.0
+    rolling = rets.rolling(window).std() * np.sqrt(252)
+    series = rolling.dropna().iloc[-lookback:]
+    if series.empty or series.median() <= 0:
+        return 1.0
+    return float(series.iloc[-1] / series.median())
+
+
+def _vol_scaled_return(close: pd.Series, n_days: int) -> float:
+    """Return over n_days divided by the asset's realized vol over the same window.
+
+    Output is a unitless 'how-many-σ-of-noise has price moved' figure. Clipped
+    to ±3 so a single 5σ blowout doesn't dominate the composite. This is the
+    standard CTA recipe — equates a 10% move in low-vol corn with a 30% move
+    in high-vol nat gas.
+    """
+    if len(close) <= n_days + 1:
+        return 0.0
+    rets = close.pct_change().dropna()
+    if len(rets) < n_days:
+        return 0.0
+    ret = float(close.iloc[-1] / close.iloc[-n_days] - 1)
+    sigma_window = float(rets.iloc[-n_days:].std()) * np.sqrt(n_days)
+    if sigma_window <= 0:
+        return 0.0
+    return float(np.clip(ret / sigma_window, -3.0, 3.0))
+
+
 def _cta_score(close: pd.Series) -> dict:
     """Trend-following CTA proxy. Vol-scaled trend at 1m / 3m / 12m, mapped to -100..+100.
 
@@ -217,6 +254,12 @@ def compute_per_asset(ohlc: pd.DataFrame) -> dict:
     # vol
     vol_20, vol_60, vol_pctile = _vol_pctile(p)
     vol_regime = _vol_regime(vol_pctile)
+    vol_ratio = _vol_ratio_5y(p)
+
+    # vol-scaled momentum / trend (unitless σ-multiples, clipped to ±3)
+    mom_1m_z = _vol_scaled_return(p, 21)
+    mom_3m_z = _vol_scaled_return(p, 63)
+    mom_12m_z = _vol_scaled_return(p, 252)
 
     # indicators
     rsi = _rsi(p)
@@ -241,6 +284,7 @@ def compute_per_asset(ohlc: pd.DataFrame) -> dict:
     return {
         "price": round(last, 4),
         "mom_12_1": mom_12_1, "mom_3m": mom_3m, "mom_1m": mom_1m,
+        "mom_1m_z": mom_1m_z, "mom_3m_z": mom_3m_z, "mom_12m_z": mom_12m_z,
         "trend_vs_200d": trend_vs_200d, "trend_vs_50d": trend_vs_50d,
         "slope_50d": slope_50, "ma200": ma200, "ma50": ma50, "ma20": ma20,
         "trend_st": trend_st, "trend_mt": trend_mt, "trend_lt": trend_lt,
@@ -249,6 +293,7 @@ def compute_per_asset(ohlc: pd.DataFrame) -> dict:
         "vol_20d_ann_pct": vol_20,
         "vol_pctile_3y": vol_pctile,
         "vol_regime": vol_regime,
+        "vol_ratio_5y": vol_ratio,
         "rsi_14": round(rsi, 1),
         "macd": macd,
         "breakout_20d": bo,

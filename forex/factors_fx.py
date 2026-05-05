@@ -108,6 +108,32 @@ def _vol_pctile(close: pd.Series, window: int = 20, lookback: int = 756) -> tupl
     return vol_20, vol_60, pct
 
 
+def _vol_ratio_5y(close: pd.Series, window: int = 60, lookback: int = 1260) -> float:
+    """Current 60d ann vol / 5y median 60d ann vol — used to damp aggregate scores."""
+    rets = close.pct_change().dropna()
+    if len(rets) < window:
+        return 1.0
+    rolling = rets.rolling(window).std() * np.sqrt(252)
+    series = rolling.dropna().iloc[-lookback:]
+    if series.empty or series.median() <= 0:
+        return 1.0
+    return float(series.iloc[-1] / series.median())
+
+
+def _vol_scaled_return(close: pd.Series, n_days: int) -> float:
+    """Return over n_days / asset's realized vol over the same window. Clipped to ±3."""
+    if len(close) <= n_days + 1:
+        return 0.0
+    rets = close.pct_change().dropna()
+    if len(rets) < n_days:
+        return 0.0
+    ret = float(close.iloc[-1] / close.iloc[-n_days] - 1)
+    sigma_window = float(rets.iloc[-n_days:].std()) * np.sqrt(n_days)
+    if sigma_window <= 0:
+        return 0.0
+    return float(np.clip(ret / sigma_window, -3.0, 3.0))
+
+
 def _cta_score(close: pd.Series) -> dict:
     rets = close.pct_change().dropna()
     if len(rets) < 252:
@@ -341,6 +367,11 @@ def compute_pair_technicals(ohlc: pd.DataFrame) -> dict:
 
     vol_20, vol_60, vol_pctile = _vol_pctile(p)
     vol_regime = _vol_regime(vol_pctile)
+    vol_ratio = _vol_ratio_5y(p)
+
+    mom_1m_z = _vol_scaled_return(p, 21)
+    mom_3m_z = _vol_scaled_return(p, 63)
+    mom_12m_z = _vol_scaled_return(p, 252)
 
     rsi = _rsi(p)
     macd = _macd_label(p)
@@ -358,6 +389,7 @@ def compute_pair_technicals(ohlc: pd.DataFrame) -> dict:
     return {
         "price": round(last, 5),
         "mom_12_1": mom_12_1, "mom_3m": mom_3m, "mom_1m": mom_1m,
+        "mom_1m_z": mom_1m_z, "mom_3m_z": mom_3m_z, "mom_12m_z": mom_12m_z,
         "trend_vs_200d": trend_vs_200d, "trend_vs_50d": trend_vs_50d,
         "ma200": ma200, "ma50": ma50, "ma20": ma20,
         "trend_st": trend_st, "trend_mt": trend_mt, "trend_lt": trend_lt,
@@ -365,6 +397,7 @@ def compute_pair_technicals(ohlc: pd.DataFrame) -> dict:
         "vol_60d_ann_pct": vol_60,
         "vol_pctile_3y": vol_pctile,
         "vol_regime": vol_regime,
+        "vol_ratio_5y": vol_ratio,
         "rsi_14": round(rsi, 1),
         "macd": macd,
         "breakout_20d": bo,
