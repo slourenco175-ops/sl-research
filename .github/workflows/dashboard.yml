@@ -4,8 +4,10 @@ name: Build & Deploy Dashboards
 # that touches commodities/ or forex/ code, and can be triggered manually.
 #
 # Site layout:
-#   /          → commodities dashboard (homepage)
-#   /forex/    → forex monitor
+#   /                       → commodities dashboard (homepage)
+#   /forex/                 → forex monitor
+#   /macro/                 → macro idea-engine dashboard
+#   /macro/correlations.html→ cross-asset correlation & driver-signal report
 on:
   schedule:
     - cron: "0 23 * * *"
@@ -15,6 +17,7 @@ on:
     paths:
       - "commodities/**"
       - "forex/**"
+      - "macro_engine/**"
       - "requirements.txt"
       - ".github/workflows/dashboard.yml"
 
@@ -53,15 +56,28 @@ jobs:
           NO_OPEN: "1"
         run: python -m forex.run_fx
 
+      - name: Build macro idea-engine dashboard
+        env:
+          NO_OPEN: "1"
+        run: python -m macro_engine.orchestrate
+
+      - name: Build macro correlation & driver-signal report
+        env:
+          NO_OPEN: "1"
+        run: python -m macro_engine.correlations_report
+
       - name: Stage Pages site
         run: |
-          mkdir -p _site _site/forex
+          mkdir -p _site _site/forex _site/macro
           # commodities dashboard becomes the homepage
           cp $(ls -t commodities/runs/dashboard_v2_*.html | head -1) _site/index.html
           cp $(ls -t commodities/runs/signals_*.csv | head -1) _site/latest_signals.csv
           # forex monitor lives at /forex/
           cp $(ls -t forex/runs/forex_*.html | head -1) _site/forex/index.html
           cp $(ls -t forex/runs/forex_*.csv | head -1) _site/forex/latest_signals.csv
+          # macro idea engine lives at /macro/
+          cp $(ls -t macro_engine/runs/macro_engine_*.html | head -1) _site/macro/index.html
+          cp $(ls -t macro_engine/runs/correlations_*.html | head -1) _site/macro/correlations.html
 
       - uses: actions/upload-pages-artifact@v3
         with:
